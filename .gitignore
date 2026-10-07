@@ -16,3 +16,4 @@ midnight-level-db/
 # Challenge answers and invite codes. Only their hashes belong on chain or in
 # git; the plaintext stays with the instructor.
 instructor/
+.vercel
