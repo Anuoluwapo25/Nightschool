@@ -4,6 +4,8 @@
 knowledge and never reaches the chain, so it can't be copied, and one learner
 can't farm rewards with fifty wallets.**
 
+**Live site: [nightschool-zeta.vercel.app](https://nightschool-zeta.vercel.app)** — on Midnight Preprod.
+
 ## The problem
 
 Learn-to-earn platforms on public chains break in two predictable ways:
