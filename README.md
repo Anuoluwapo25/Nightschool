@@ -73,7 +73,7 @@ Then: create an identity, connect the wallet, enrol, solve, claim.
 | Network    | Midnight Preprod                                                     |
 | Contract   | `b6b2c5e5348618c64e9e269835088aaea2a633ba94aece3fcd2508253a204c24`   |
 | Deploy tx  | `00e1af9fd64bb87498e1058c48258ffdd57238a1e30c997cc48db8d5924ed84b30` |
-| Challenges | 4 published, answers committed                                       |
+| Challenges | 4 of 7 published, answers committed                                  |
 | Invites    | 24 published                                                         |
 
 ```bash
@@ -82,12 +82,15 @@ nightschool status --contract b6b2c5e5348618c64e9e269835088aaea2a633ba94aece3fcd
 
 ## Curriculum
 
-| #   | Lesson          | Midnight concept           | Answer is…           |
-| --- | --------------- | -------------------------- | -------------------- |
-| 01  | Read the ledger | Public state, the indexer  | A transaction hash   |
-| 02  | Your first hash | `persistentHash`           | A 32-byte hash       |
-| 03  | Commit and hide | `persistentCommit`         | A 32-byte commitment |
-| 04  | Nullifiers      | Spend once, stay anonymous | A nullifier          |
+| #   | Lesson            | Midnight concept            | Answer is…           |
+| --- | ----------------- | --------------------------- | -------------------- |
+| 01  | Read the ledger   | Public state, the indexer   | A transaction hash   |
+| 02  | Your first hash   | `persistentHash`            | A 32-byte hash       |
+| 03  | Commit and hide   | `persistentCommit`          | A 32-byte commitment |
+| 04  | Nullifiers        | Spend once, stay anonymous  | A nullifier          |
+| 05  | The disclose rule | `disclose()` and witnesses  | A learner commitment |
+| 06  | Merkle membership | Anonymous membership        | A Merkle root        |
+| 07  | Shielded tokens   | `tokenType`, shielded mints | A token type         |
 
 Every answer is the 32-byte output of real work. That matters because the
 answer's commitment is public. A low-entropy answer like "42" or "yes" could be
@@ -139,8 +142,7 @@ their hashes ever go on chain.
   without revealing which ones or who you are.
 - **Per-learner challenges**, so that sharing an answer doesn't help anyone else.
 - **Instructor dashboard** for creating challenges and invites from the browser.
-- **More lessons:** disclosure rules, Merkle proofs, shielded tokens, and
-  deploying your own contract.
+- **More lessons:** deploying your own contract, and private credentials.
 
 ## License
 

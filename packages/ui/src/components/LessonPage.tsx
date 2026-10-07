@@ -48,6 +48,8 @@ export function LessonPage({
   const [verdict, setVerdict] = useState<'right' | 'wrong'>();
   const [digest, setDigest] = useState<string>();
   const id = challengeIdOf(lesson.slug);
+  // A lesson can ship before the instructor publishes its answer commitment.
+  const published = state === undefined || state.challenges.member(id);
   const claimed = state !== undefined && secret !== undefined && hasClaimed(state, secret, id);
   const next = LESSONS.find((l) => l.number === lesson.number + 1);
   const previous = LESSONS.find((l) => l.number === lesson.number - 1);
@@ -113,6 +115,18 @@ export function LessonPage({
       <section className="task-block">
         <p className="task-label">Your task</p>
         <p className="task-text">{renderInline(lesson.task)}</p>
+        <ol className="steps">
+          {lesson.steps.map((step) => (
+            <li key={step.text.slice(0, 32)}>
+              <p>{renderInline(step.text)}</p>
+              {step.code && (
+                <pre className="code">
+                  <code>{step.code}</code>
+                </pre>
+              )}
+            </li>
+          ))}
+        </ol>
         <details className="hint">
           <summary>A place to start</summary>
           <pre className="code" data-lang={lesson.hint.language}>
@@ -135,12 +149,19 @@ export function LessonPage({
           />
           <button
             className="btn lamp"
-            disabled={!state || answer.trim() === ''}
+            disabled={!state || !published || answer.trim() === ''}
             onClick={() => void check()}
           >
             Check under the lamp
           </button>
         </label>
+
+        {!published && (
+          <p className="verdict pending">
+            This lesson’s answer isn’t on chain yet, so it can’t be checked. Work through it now;
+            checking and claiming open once the instructor publishes it.
+          </p>
+        )}
 
         {verdict === 'wrong' && (
           <p className="verdict bad">

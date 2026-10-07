@@ -8,18 +8,14 @@ import { COMING, LESSONS } from '../lessons.js';
 
 export type Progress = 'new' | 'solved' | 'claimed';
 
-// Positions on a 1000×340 canvas: an even zigzag read left to right. Stars on
-// a high point carry their labels above, low ones below, so no label sits on a
-// line.
-const POINTS: readonly [number, number][] = [
-  [90, 230],
-  [227, 110],
-  [363, 230],
-  [500, 110],
-  [637, 230],
-  [773, 110],
-  [910, 230],
-];
+// Positions on a 1000×340 canvas: an even zigzag read left to right, spaced
+// for however many stars there are. Stars on a high point carry their labels
+// above, low ones below, so no label sits on a line.
+const STAR_COUNT = LESSONS.length + COMING.length;
+const POINTS: readonly [number, number][] = Array.from({ length: STAR_COUNT }, (_, i) => [
+  Math.round(70 + (860 * i) / Math.max(1, STAR_COUNT - 1)),
+  i % 2 === 0 ? 230 : 110,
+]);
 
 const isPeak = (i: number): boolean => POINTS[i]![1] < 170;
 

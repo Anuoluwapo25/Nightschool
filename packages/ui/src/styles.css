@@ -1228,6 +1228,157 @@ textarea:focus {
   font: 14px var(--sans);
 }
 
+/* Walkthrough steps ------------------------------------------------------ */
+
+.steps {
+  margin: 0 0 18px;
+  padding-left: 1.4em;
+}
+
+.steps li {
+  margin-bottom: 12px;
+}
+
+.steps li::marker {
+  color: var(--lamp);
+  font: 600 15px var(--sans);
+}
+
+.steps p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.steps .code {
+  margin-top: 8px;
+}
+
+.verdict.pending {
+  border: 1px dashed var(--line);
+  color: var(--muted);
+}
+
+.tag.lamp {
+  background: var(--lamp-wash);
+  color: var(--lamp);
+  outline: 1px solid color-mix(in srgb, var(--lamp) 40%, transparent);
+}
+
+/* 05 — compiler verdicts -------------------------------------------------- */
+
+.disclose .segmented {
+  flex-wrap: wrap;
+}
+
+.compiler {
+  margin: 12px 0 14px;
+  padding: 12px 14px;
+  overflow-x: auto;
+  border-radius: 10px;
+  font: 12.5px/1.55 var(--mono);
+  white-space: pre-wrap;
+}
+
+.compiler.bad {
+  background: color-mix(in srgb, var(--bad) 10%, transparent);
+  color: var(--bad);
+}
+
+.compiler.good {
+  background: color-mix(in srgb, var(--good) 10%, transparent);
+  color: var(--good);
+}
+
+/* 06 — Merkle tree -------------------------------------------------------- */
+
+.merkle svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.tree-edge {
+  stroke: var(--line);
+  stroke-width: 2;
+}
+
+.tree-edge.path {
+  stroke: var(--lamp);
+}
+
+.tree-node rect {
+  fill: var(--bg-deep);
+  stroke: var(--line);
+  stroke-width: 1.5;
+}
+
+.tree-node text {
+  fill: var(--text-2);
+  font: 15px var(--mono);
+}
+
+.tree-node.leaf {
+  cursor: pointer;
+}
+
+.tree-node.leaf:hover rect,
+.tree-node.leaf:focus-visible rect {
+  stroke: var(--lamp);
+}
+
+.tree-node.path rect {
+  fill: var(--lamp-wash);
+  stroke: var(--lamp);
+}
+
+.tree-node.sibling rect {
+  stroke: var(--lamp);
+  stroke-dasharray: 5 4;
+}
+
+.tree-node.root rect {
+  fill: var(--moon-wash);
+  stroke: var(--moon);
+}
+
+.tree-node.root text {
+  fill: var(--moon);
+}
+
+.merkle-legend p {
+  margin: 10px 0 0;
+  font-size: 17px;
+}
+
+/* 07 — what an observer sees ---------------------------------------------- */
+
+.observer {
+  margin: 0;
+}
+
+.observer div {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr);
+  gap: 12px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.observer dt {
+  color: var(--muted);
+  font: 14px var(--sans);
+}
+
+.observer dd {
+  margin: 0;
+  font: 14px var(--mono);
+  overflow-wrap: anywhere;
+}
+
+.observer .hidden dd {
+  color: var(--moon);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .pulse,
   .spinner {

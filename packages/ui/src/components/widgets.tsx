@@ -19,6 +19,12 @@ export function LessonWidget({ widget }: { widget: Widget }) {
       return <BruteForce />;
     case 'nullifiers':
       return <Nullifiers />;
+    case 'disclose':
+      return <Disclose />;
+    case 'merkle':
+      return <Merkle />;
+    case 'shielded':
+      return <Shielded />;
   }
 }
 
@@ -294,6 +300,231 @@ function Nullifiers() {
       <p className="widget-note">
         Every cell is different, so the chain cannot tell that two cells belong to the same person.
         Click one twice.
+      </p>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 05 — three ways to store a secret, and the compiler's verdict on each
+// ---------------------------------------------------------------------------
+
+// The messages are the compiler's own output (compactc 0.31.1), trimmed.
+const STORES = [
+  {
+    label: 'the secret',
+    line: 'stored = secret();',
+    ok: false,
+    verdict: `potential witness-value disclosure must be declared but is not:
+  witness value potentially disclosed:
+    the return value of witness secret
+  nature of the disclosure:
+    ledger operation might disclose the witness value`,
+  },
+  {
+    label: 'its hash',
+    line: 'stored = persistentHash<Bytes<32>>(secret());',
+    ok: false,
+    verdict: `potential witness-value disclosure must be declared but is not:
+  witness value potentially disclosed:
+    the return value of witness secret
+  nature of the disclosure:
+    ledger operation might disclose a hash of the witness value`,
+  },
+  {
+    label: 'a commitment',
+    line: 'stored = persistentCommit<Bytes<32>>(secret(), salt());',
+    ok: true,
+    verdict: 'Compiled. A salted commitment hides the secret, so there is nothing to declare.',
+  },
+] as const;
+
+function Disclose() {
+  const [choice, setChoice] = useState(0);
+  const [declared, setDeclared] = useState(false);
+  const store = STORES[choice]!;
+  const wrap = declared && !store.ok;
+  const line = wrap ? store.line.replace(/= (.*);$/, '= disclose($1);') : store.line;
+
+  return (
+    <div className="disclose">
+      <div className="segmented" role="group" aria-label="What the circuit stores">
+        {STORES.map((s, i) => (
+          <button
+            key={s.label}
+            className={choice === i ? 'on' : ''}
+            onClick={() => {
+              setChoice(i);
+              setDeclared(false);
+            }}
+          >
+            Store {s.label}
+          </button>
+        ))}
+      </div>
+      <pre className="code" data-lang="compact">
+        <code>{`export ledger stored: Bytes<32>;
+witness secret(): Bytes<32>;
+
+export circuit put(): [] {
+  ${line}
+}`}</code>
+      </pre>
+      <pre className={`compiler ${store.ok || wrap ? 'good' : 'bad'}`} aria-live="polite">
+        {store.ok
+          ? store.verdict
+          : wrap
+            ? 'Compiled. You declared the disclosure, and anyone reading the contract can see that you did.'
+            : `Exception: ${store.verdict}`}
+      </pre>
+      {!store.ok && (
+        <button className="btn" onClick={() => setDeclared(!declared)}>
+          {declared ? 'Remove disclose()' : 'Wrap it in disclose()'}
+        </button>
+      )}
+      <p className="widget-note">
+        Branching on a secret counts too: an <code>if</code> that decides whether a ledger write
+        happens discloses which way it went.
+      </p>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 06 — a four-leaf tree: pick a learner, see their path and what stays hidden
+// ---------------------------------------------------------------------------
+
+const MEMBERS = ['Ada', 'Ben', 'Cy', 'Dee'] as const;
+
+function Merkle() {
+  const [chosen, setChosen] = useState<number>();
+  // Nodes: level 0 leaves 0–3, level 1 pairs 0–1, root.
+  const pair = chosen === undefined ? undefined : chosen >> 1;
+  const leafRole = (i: number) =>
+    chosen === undefined ? '' : i === chosen ? 'path' : i === (chosen ^ 1) ? 'sibling' : '';
+  const pairRole = (i: number) => (pair === undefined ? '' : i === pair ? 'path' : 'sibling');
+
+  const leafX = [110, 270, 430, 590];
+  const pairX = [190, 510];
+
+  return (
+    <div className="merkle">
+      <svg viewBox="0 0 700 250" role="img" aria-label="A Merkle tree of four learners">
+        {pairX.map((x, p) => (
+          <g key={`e${p}`}>
+            <line x1={350} y1={44} x2={x} y2={116} className={`tree-edge ${pairRole(p)}`} />
+            {[0, 1].map((k) => {
+              const i = p * 2 + k;
+              return (
+                <line
+                  key={i}
+                  x1={x}
+                  y1={136}
+                  x2={leafX[i]}
+                  y2={196}
+                  className={`tree-edge ${leafRole(i) === 'path' ? 'path' : ''}`}
+                />
+              );
+            })}
+          </g>
+        ))}
+        <g className="tree-node path root">
+          <rect x={290} y={14} width={120} height={34} rx={8} />
+          <text x={350} y={36} textAnchor="middle">
+            root · public
+          </text>
+        </g>
+        {pairX.map((x, p) => (
+          <g key={`p${p}`} className={`tree-node ${pairRole(p)}`}>
+            <rect x={x - 54} y={110} width={108} height={30} rx={8} />
+            <text x={x} y={130} textAnchor="middle">
+              hash({MEMBERS[p * 2]![0]}, {MEMBERS[p * 2 + 1]![0]})
+            </text>
+          </g>
+        ))}
+        {MEMBERS.map((name, i) => (
+          <g
+            key={name}
+            className={`tree-node leaf ${leafRole(i)}`}
+            onClick={() => setChosen(i)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') setChosen(i);
+            }}
+            role="button"
+            tabIndex={0}
+            aria-label={`Prove ${name} is enrolled`}
+          >
+            <rect x={leafX[i]! - 54} y={196} width={108} height={40} rx={8} />
+            <text x={leafX[i]} y={221} textAnchor="middle">
+              {name}
+            </text>
+          </g>
+        ))}
+      </svg>
+      {chosen === undefined ? (
+        <p className="widget-note">Click a learner to build their membership proof.</p>
+      ) : (
+        <div className="merkle-legend">
+          <p>
+            <span className="tag lamp">private</span> {MEMBERS[chosen]}’s leaf, and the two
+            siblings: {MEMBERS[chosen ^ 1]} and hash(
+            {MEMBERS[(1 - pair!) * 2]![0]}, {MEMBERS[(1 - pair!) * 2 + 1]![0]}).
+          </p>
+          <p>
+            <span className="tag moon">public</span> The root, and that it was reached. The same for
+            any of the four.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 07 — the same reward, sent in the open and minted shielded
+// ---------------------------------------------------------------------------
+
+const VIEWS = {
+  public: [
+    ['From', 'contract b6b2c5e5…4c24'],
+    ['To', 'addr_test1qz7…9f3k (the learner, forever)'],
+    ['Amount', '40 Night Credits'],
+    ['Linked to', 'every other payment to that address'],
+  ],
+  shielded: [
+    ['From', 'contract b6b2c5e5…4c24 minted a coin'],
+    ['To', 'hidden'],
+    ['Amount', 'hidden'],
+    ['Linked to', 'nothing: a new commitment among all the others'],
+  ],
+} as const;
+
+function Shielded() {
+  const [mode, setMode] = useState<keyof typeof VIEWS>('public');
+  return (
+    <div className="shielded">
+      <div className="segmented" role="group" aria-label="How the reward is paid">
+        <button className={mode === 'public' ? 'on' : ''} onClick={() => setMode('public')}>
+          Public transfer
+        </button>
+        <button className={mode === 'shielded' ? 'on' : ''} onClick={() => setMode('shielded')}>
+          Shielded mint
+        </button>
+      </div>
+      <dl className="observer">
+        {VIEWS[mode].map(([k, v]) => (
+          <div
+            key={k}
+            className={v.startsWith('hidden') || v.startsWith('nothing') ? 'hidden' : ''}
+          >
+            <dt>{k}</dt>
+            <dd>{v}</dd>
+          </div>
+        ))}
+      </dl>
+      <p className="widget-note">
+        Illustrative values. The chain still checks that a shielded transaction balances; it checks
+        in zero knowledge.
       </p>
     </div>
   );
