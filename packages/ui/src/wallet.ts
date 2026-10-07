@@ -1,0 +1,452 @@
+/**
+ * Browser wallet connection through the Midnight DApp connector (Lace and any
+ * other wallet that injects `window.midnight`).
+ *
+ * The wallet holds the keys, pays the fees and proves. This module turns what
+ * the connector exposes into the providers midnight-js needs, so the dashboard
+ * runs the same enrol and claim workflows the CLI does — without a seed in a
+ * file.
+ */
+
+import type { ConnectedAPI, InitialAPI } from '@midnight-ntwrk/dapp-connector-api';
+import { Transaction, type FinalizedTransaction } from '@midnight-ntwrk/ledger-v8';
+import { httpClientProofProvider } from '@midnight-ntwrk/midnight-js-http-client-proof-provider';
+import { FetchZkConfigProvider } from '@midnight-ntwrk/midnight-js-fetch-zk-config-provider';
+import { indexerPublicDataProvider } from '@midnight-ntwrk/midnight-js-indexer-public-data-provider';
+import { levelPrivateStateProvider } from '@midnight-ntwrk/midnight-js-level-private-state-provider';
+import { setNetworkId } from '@midnight-ntwrk/midnight-js-network-id';
+import {
+  type MidnightProvider,
+  type ProverKey,
+  type VerifierKey,
+  type WalletProvider,
+  type ZKIR,
+  ZKConfigProvider,
+} from '@midnight-ntwrk/midnight-js-types';
+import type { NightschoolProviders } from '@nightschool/api/nightschool';
+
+declare global {
+  interface Window {
+    midnight?: Record<string, InitialAPI>;
+  }
+}
+
+/**
+ * An injected wallet, kept as the object the extension put on `window.midnight`.
+ *
+ * Never copy or re-wrap it: these are class instances with private fields, and a
+ * copy loses its identity, so the first call fails with "attempted to get
+ * private field on non-instance". The id travels beside the API instead.
+ */
+export type AvailableWallet = {
+  readonly id: string;
+  readonly api: InitialAPI;
+  /** Whether it speaks the connector version this dashboard is built against. */
+  readonly supported: boolean;
+};
+
+/** Connector API major version this dashboard is built against. */
+const SUPPORTED_API_MAJOR = '4.';
+
+/** Wallets that have injected a connector this dashboard can talk to. */
+export const availableWallets = (): AvailableWallet[] =>
+  Object.entries(window.midnight ?? {})
+    .filter(([, api]) => typeof api?.connect === 'function')
+    .map(([id, api]) => ({
+      id,
+      api,
+      supported: String(api.apiVersion ?? '').startsWith(SUPPORTED_API_MAJOR),
+    }));
+
+export type WalletSession = {
+  readonly wallet: AvailableWallet;
+  readonly api: ConnectedAPI;
+  readonly networkId: string;
+  readonly indexerUri: string;
+  readonly indexerWsUri: string;
+  readonly shieldedAddress: string;
+  readonly coinPublicKey: string;
+  readonly encryptionPublicKey: string;
+  /**
+   * The prover the wallet will use. It sees the learner's secret and answer in
+   * the clear, so a remote one is a disclosure — and a hosted prover will not
+   * take proving material for an arbitrary contract anyway.
+   */
+  readonly proverUri?: string;
+};
+
+/**
+ * Network id spellings a wallet may use for the same chain. `connect` takes the
+ * id as a hint and a wallet refuses outright when it disagrees ("Network ID
+ * mismatch") without saying what it is set to — so ask for the one the contract
+ * lives on first, then try the aliases before giving up.
+ */
+const NETWORK_ALIASES: Record<string, readonly string[]> = {
+  preprod: ['preprod', 'Preprod', 'pre-prod', 'preprod-02', 'testnet-preprod'],
+  undeployed: ['undeployed', 'Undeployed'],
+};
+
+const isNetworkMismatch = (cause: unknown): boolean =>
+  /network\s*id\s*mismatch|unsupported network|wrong network/i.test(
+    String(cause instanceof Error ? cause.message : cause),
+  );
+
+export const connectWallet = async (
+  wallet: AvailableWallet,
+  networkId: string,
+): Promise<WalletSession> => {
+  // Call through the injected object so `this` stays the wallet's own instance.
+  let api: ConnectedAPI | undefined;
+  let mismatch: unknown;
+  for (const candidate of NETWORK_ALIASES[networkId] ?? [networkId]) {
+    try {
+      api = await wallet.api.connect(candidate);
+      break;
+    } catch (cause) {
+      if (!isNetworkMismatch(cause)) throw cause;
+      mismatch = cause;
+    }
+  }
+  if (api === undefined) {
+    throw new Error(
+      `${wallet.api.name} refused to connect on ${networkId}: its own Midnight network is set to ` +
+        `something else. Open the wallet, switch its network to ${networkId}, then connect again. ` +
+        `(${mismatch instanceof Error ? mismatch.message : String(mismatch)})`,
+    );
+  }
+  const [config, addresses] = await Promise.all([
+    api.getConfiguration(),
+    api.getShieldedAddresses(),
+  ]);
+  // The wallet accepted a hint but reports its own network: if that is not the
+  // one the contract lives on, nothing here would work against it.
+  if (config.networkId.toLowerCase() !== networkId.toLowerCase()) {
+    throw new Error(
+      `${wallet.api.name} is connected to ${config.networkId}, but this dashboard reads a contract on ` +
+        `${networkId}. Switch the wallet's Midnight network to ${networkId} and connect again.`,
+    );
+  }
+  setNetworkId(config.networkId);
+  return {
+    wallet,
+    api,
+    networkId: config.networkId,
+    indexerUri: config.indexerUri,
+    indexerWsUri: config.indexerWsUri,
+    shieldedAddress: addresses.shieldedAddress,
+    coinPublicKey: addresses.shieldedCoinPublicKey,
+    encryptionPublicKey: addresses.shieldedEncryptionPublicKey,
+    proverUri: config.proverServerUri,
+  };
+};
+
+/**
+ * Whether an error means the wallet's messaging channel is gone.
+ *
+ * A connector API object is a live channel into the extension, not a handle
+ * that keeps working. Dismissing the popup, or the extension's background
+ * worker sleeping between steps, tears it down — and every later call fails
+ * with "Remote API with channel '…' was shutdown: object can no longer be
+ * used". A wallet can also drop this site's authorization while the channel
+ * stays up, answering "No account is connected for this dApp. Please
+ * reconnect." Reconnecting is the only cure for either, so recognise both.
+ */
+export const isChannelClosed = (cause: unknown): boolean =>
+  /was shutdown|no longer be used|disconnect|not connected|no account is connected|please reconnect/i.test(
+    String(cause instanceof Error ? cause.message : cause),
+  );
+
+/**
+ * Returns a session whose channel is known to be live, reconnecting if the
+ * wallet has closed the old one. Long-running steps should call this first:
+ * a proof takes minutes, and the channel may not survive it.
+ */
+export const ensureConnected = async (session: WalletSession): Promise<WalletSession> => {
+  try {
+    const status = await session.api.getConnectionStatus();
+    if (status.status === 'connected' && status.networkId === session.networkId) {
+      return session;
+    }
+  } catch (cause) {
+    if (!isChannelClosed(cause)) throw cause;
+  }
+  return connectWallet(session.wallet, session.networkId);
+};
+
+const toHex = (bytes: Uint8Array): string =>
+  Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+
+const fromHex = (hex: string): Uint8Array =>
+  Uint8Array.from(hex.match(/../g) ?? [], (byte) => parseInt(byte, 16));
+
+/** Whether the wallet refused a call because it has locked itself. */
+export const isWalletLocked = (cause: unknown): boolean =>
+  /wallet is locked|unlock the wallet/i.test(
+    String(cause instanceof Error ? cause.message : cause),
+  );
+
+/** How long to wait for someone to unlock the wallet before giving up. */
+const UNLOCK_TIMEOUT_MS = 10 * 60 * 1000;
+const UNLOCK_POLL_MS = 3_000;
+
+/**
+ * Calls the wallet, waiting out a lock instead of failing.
+ *
+ * Balancing and submitting come after the proof, which takes minutes — long
+ * enough for the wallet to auto-lock. Failing then throws the proof away, so
+ * say the wallet needs unlocking and retry once it answers again.
+ */
+const whileUnlocked = async <T>(
+  session: WalletSession,
+  onLocked: (locked: boolean) => void,
+  call: () => Promise<T>,
+): Promise<T> => {
+  const deadline = Date.now() + UNLOCK_TIMEOUT_MS;
+  for (;;) {
+    try {
+      const result = await call();
+      onLocked(false);
+      return result;
+    } catch (cause) {
+      if (!isWalletLocked(cause) || Date.now() > deadline) {
+        onLocked(false);
+        throw cause;
+      }
+      onLocked(true);
+      // Probe with a call that opens no prompt until the wallet answers again.
+      for (;;) {
+        await new Promise((resolve) => setTimeout(resolve, UNLOCK_POLL_MS));
+        if (Date.now() > deadline) break;
+        try {
+          await session.api.getShieldedAddresses();
+          break;
+        } catch (probe) {
+          if (!isWalletLocked(probe)) break;
+        }
+      }
+    }
+  }
+};
+
+/**
+ * The wallet balances and seals; the wallet submits.
+ *
+ * Both happen after the proof, minutes after the step checked its connection,
+ * and the wallet may have dropped this site in between. Reconnect and retry
+ * the same call rather than throw the proof away — but only to the same
+ * account, since the transaction was built for its keys.
+ */
+const walletSide = (
+  session: WalletSession,
+  onLocked: (locked: boolean) => void,
+): {
+  walletProvider: WalletProvider;
+  midnightProvider: MidnightProvider;
+} => {
+  let live = session;
+  const call = async <T>(request: (api: ConnectedAPI) => Promise<T>): Promise<T> => {
+    try {
+      return await whileUnlocked(live, onLocked, () => request(live.api));
+    } catch (cause) {
+      if (!isChannelClosed(cause)) throw cause;
+      const next = await connectWallet(live.wallet, live.networkId);
+      if (next.coinPublicKey !== live.coinPublicKey) {
+        throw new Error(
+          `${live.wallet.api.name} reconnected with a different account. Switch back to the one ` +
+            `this step started with, then retry.`,
+          { cause },
+        );
+      }
+      live = next;
+      return whileUnlocked(live, onLocked, () => request(live.api));
+    }
+  };
+  return {
+    walletProvider: {
+      getCoinPublicKey: () => session.coinPublicKey,
+      getEncryptionPublicKey: () => session.encryptionPublicKey,
+      balanceTx: async (tx) => {
+        const serialized = toHex(tx.serialize());
+        const { tx: sealed } = await call((api) => api.balanceUnsealedTransaction(serialized));
+        return Transaction.deserialize(
+          'signature',
+          'proof',
+          'binding',
+          fromHex(sealed),
+        ) as FinalizedTransaction;
+      },
+    },
+    midnightProvider: {
+      submitTx: async (tx) => {
+        const serialized = toHex(tx.serialize());
+        await call((api) => api.submitTransaction(serialized));
+        const [id] = tx.identifiers();
+        if (id === undefined) throw new Error('submitted transaction has no identifier');
+        return id;
+      },
+    },
+  };
+};
+
+/**
+ * Where the browser fetches a contract's proving keys and ZK IR: this site's
+ * `zk/<contract>/`, a copy of what the Compact compiler wrote to `managed/`.
+ */
+export const zkBaseUrl = (): string => new URL('zk/nightschool/', document.baseURI).toString();
+
+/**
+ * Serves a contract's ZK artifacts from this site, by circuit name.
+ *
+ * Key locations arrive namespaced as `<contract>#<circuit>` from parts of the
+ * stack, and the fetcher rejects a name containing `#` outright — which
+ * surfaced only as "Failed to read verifier key", naming neither the URL nor
+ * the reason. So take the circuit off the end, and say what was being fetched
+ * from where when something does fail.
+ */
+class SiteZkConfigProvider extends ZKConfigProvider<string> {
+  private readonly fetcher: FetchZkConfigProvider<string>;
+
+  constructor(private readonly baseUrl: string) {
+    super();
+    // The fetcher keeps this function as a property and calls it as a method of
+    // itself. `fetch` must be invoked with `window` as its receiver in a
+    // browser, so an unbound reference throws "Illegal invocation" — and only
+    // in a browser, which is why it survives every test run under Node.
+    this.fetcher = new FetchZkConfigProvider<string>(baseUrl, (...args) =>
+      globalThis.fetch(...args),
+    );
+  }
+
+  private circuitOf(circuitId: string): string {
+    const hash = circuitId.lastIndexOf('#');
+    return hash === -1 ? circuitId : circuitId.slice(hash + 1);
+  }
+
+  private async load<T>(what: string, circuitId: string, get: (circuit: string) => Promise<T>) {
+    const circuit = this.circuitOf(circuitId);
+    try {
+      return await get(circuit);
+    } catch (cause) {
+      // eslint-disable-next-line no-console
+      console.error(`nightschool: ${what} for "${circuit}" from ${this.baseUrl} failed`, cause);
+      throw new Error(
+        `could not load the ${what} for "${circuit}" from ${this.baseUrl}: ` +
+          `${cause instanceof Error ? cause.message : String(cause)}`,
+        { cause },
+      );
+    }
+  }
+
+  getProverKey(circuitId: string): Promise<ProverKey> {
+    return this.load('proving key', circuitId, (circuit) => this.fetcher.getProverKey(circuit));
+  }
+
+  getVerifierKey(circuitId: string): Promise<VerifierKey> {
+    return this.load('verifier key', circuitId, (circuit) => this.fetcher.getVerifierKey(circuit));
+  }
+
+  getZKIR(circuitId: string): Promise<ZKIR> {
+    return this.load('circuit IR', circuitId, (circuit) => this.fetcher.getZKIR(circuit));
+  }
+}
+
+/**
+ * Fetches each ZK artifact a contract needs and reports what happened.
+ *
+ * The SDK reports a failed key read as one wrapped error that names neither the
+ * URL nor the status, so this asks for the same artifacts directly and returns
+ * plain results — enough to tell a missing file from a rejected name, a wrong
+ * content type or a network failure.
+ */
+export const checkZkAssets = async (): Promise<readonly string[]> => {
+  const base = zkBaseUrl();
+  const circuits = ['enroll', 'claim'];
+  const results: string[] = [`base ${base}`];
+  for (const circuit of circuits) {
+    for (const [what, path, ext] of [
+      ['verifier key', 'keys', '.verifier'],
+      ['circuit IR', 'zkir', '.bzkir'],
+      ['proving key', 'keys', '.prover'],
+    ] as const) {
+      const url = `${base}${path}/${circuit}${ext}`;
+      try {
+        const response = await fetch(url, { method: what === 'proving key' ? 'HEAD' : 'GET' });
+        const type = response.headers.get('content-type') ?? 'unknown';
+        const size =
+          what === 'proving key'
+            ? (response.headers.get('content-length') ?? '?')
+            : String((await response.arrayBuffer()).byteLength);
+        results.push(`${circuit} ${what}: ${response.status} ${type} ${size} bytes`);
+      } catch (cause) {
+        results.push(
+          `${circuit} ${what}: FETCH FAILED ${cause instanceof Error ? cause.message : String(cause)}`,
+        );
+      }
+    }
+  }
+  return results;
+};
+
+/**
+ * Confirms the browser can reach the proof server before any work starts.
+ *
+ * When it cannot, the SDK fails mid-step with "'check' returned an error:
+ * TypeError: Failed to fetch", which names neither the server nor why. The
+ * browser hides the reason too, so list the ones that happen in practice.
+ */
+export const checkProofServer = async (url: string): Promise<void> => {
+  if (url === '') throw new Error('Enter the URL of a proof server you run.');
+  try {
+    await fetch(url, { method: 'GET' });
+  } catch (cause) {
+    const mixed =
+      window.location.protocol === 'https:' && url.startsWith('http:')
+        ? ' This page is HTTPS and the prover is plain HTTP, which browsers block —'
+        : '';
+    throw new Error(
+      `This browser cannot reach the proof server at ${url}.${mixed} Check that it is running ` +
+        `(docker ps), that the URL is right, and — if it sits behind a tunnel — that the tunnel is up ` +
+        `and passes browser requests (CORS) through. Nothing was submitted. ` +
+        `(${cause instanceof Error ? cause.message : String(cause)})`,
+      { cause },
+    );
+  }
+};
+
+/** How long to wait for one proof. */
+const PROOF_TIMEOUT_MS = 30 * 60 * 1000;
+
+/**
+ * Providers backed by the connected wallet.
+ *
+ * Proving goes to `proofServerUrl`, a proof server the learner runs, rather than
+ * to a hosted one: the proof is built from their secret and their answer, and a
+ * hosted prover would see both in the clear. The private state is encrypted
+ * with `password` and kept in this browser's IndexedDB.
+ *
+ * `onLocked` hears when the wallet has locked itself mid-step and is being
+ * waited on, so the page can ask for it to be unlocked.
+ */
+export const browserProviders = async (
+  session: WalletSession,
+  password: string,
+  proofServerUrl: string,
+  onLocked: (locked: boolean) => void = () => undefined,
+): Promise<NightschoolProviders> => {
+  await checkProofServer(proofServerUrl);
+  const zkConfigProvider = new SiteZkConfigProvider(zkBaseUrl());
+  const proofProvider = httpClientProofProvider(proofServerUrl, zkConfigProvider, {
+    timeout: PROOF_TIMEOUT_MS,
+  });
+  return {
+    privateStateProvider: levelPrivateStateProvider({
+      privateStateStoreName: 'nightschool-browser',
+      accountId: session.coinPublicKey,
+      privateStoragePasswordProvider: () => password,
+    }),
+    publicDataProvider: indexerPublicDataProvider(session.indexerUri, session.indexerWsUri),
+    zkConfigProvider,
+    proofProvider,
+    ...walletSide(session, onLocked),
+  } as unknown as NightschoolProviders;
+};

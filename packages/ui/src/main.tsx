@@ -1,0 +1,17 @@
+// Node globals the SDK expects; must be first, before anything that uses them.
+import './shims/node-globals.js';
+import { StrictMode } from 'react';
+import { createRoot } from 'react-dom/client';
+import App from './App.js';
+import './styles.css';
+
+const container = document.getElementById('root');
+if (container === null) {
+  throw new Error('missing #root');
+}
+
+createRoot(container).render(
+  <StrictMode>
+    <App />
+  </StrictMode>,
+);

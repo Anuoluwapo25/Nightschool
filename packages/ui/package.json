@@ -1,0 +1,40 @@
+{
+  "name": "@nightschool/ui",
+  "version": "0.1.0",
+  "description": "Nightschool site: lessons, live challenge board, private claims.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node scripts/copy-zk.mjs && vite",
+    "build": "tsc --noEmit && node scripts/copy-zk.mjs && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@nightschool/api": "0.1.0",
+    "@nightschool/contract": "0.1.0",
+    "@midnight-ntwrk/dapp-connector-api": "4.0.1",
+    "@midnight-ntwrk/ledger-v8": "8.1.0",
+    "@midnight-ntwrk/midnight-js-dapp-connector-proof-provider": "4.1.1",
+    "@midnight-ntwrk/midnight-js-fetch-zk-config-provider": "4.1.1",
+    "@midnight-ntwrk/midnight-js-http-client-proof-provider": "4.1.1",
+    "@midnight-ntwrk/midnight-js-indexer-public-data-provider": "4.1.1",
+    "@midnight-ntwrk/midnight-js-level-private-state-provider": "4.1.1",
+    "@midnight-ntwrk/midnight-js-network-id": "4.1.1",
+    "@midnight-ntwrk/midnight-js-types": "4.1.1",
+    "@scure/base": "^2.3.0",
+    "assert": "2.1.0",
+    "buffer": "6.0.3",
+    "events": "3.3.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.3",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.11",
+    "vite-plugin-wasm": "^3.3.0"
+  }
+}

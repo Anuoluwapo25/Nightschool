@@ -1,0 +1,18 @@
+node_modules/
+dist/
+managed/
+*.tsbuildinfo
+.env
+.env.local
+.DS_Store
+.vite/
+packages/ui/dist/
+# Proving keys copied from packages/contract/managed at build time.
+packages/ui/public/zk/
+.nightschool-state*/
+midnight-level-db/
+*.log
+
+# Challenge answers and invite codes. Only their hashes belong on chain or in
+# git; the plaintext stays with the instructor.
+instructor/

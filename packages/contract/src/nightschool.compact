@@ -1,0 +1,173 @@
+// Nightschool — learn Midnight by solving challenges on it, with rewards that
+// cannot be farmed and answers that never reach the chain.
+//
+// Learn-to-earn on a public chain breaks in two ways. The first correct answer
+// is readable in its own transaction, so everyone after it copies the answer
+// instead of learning anything. And one person with fifty wallets claims fifty
+// rewards. Nightschool closes both:
+//
+//   1. A learner proves they know a challenge's answer without revealing it.
+//      The chain holds only a commitment to the answer; a claim discloses
+//      neither the answer nor anything derived from it that could be replayed.
+//   2. A learner enrols once, through a one-time invite, and every claim proves
+//      membership of the enrolled set without saying which member is claiming.
+//      A per-learner, per-challenge nullifier then stops the same learner from
+//      claiming the same challenge twice, from any number of wallets.
+//
+// Not even the instructor can tell which enrolled learner solved what: claims
+// are unlinkable to enrolments and to each other.
+
+pragma language_version >= 0.17;
+
+import CompactStandardLibrary;
+
+// ---------------------------------------------------------------------------
+// Public state
+// ---------------------------------------------------------------------------
+
+// Commitment to the instructor's secret key; gates invites and challenges.
+export ledger instructor: Bytes<32>;
+
+// Hashes of unredeemed invite codes. Redeeming one removes it.
+export ledger invites: Set<Bytes<32>>;
+
+// Commitments of enrolled learners. Historic, so a claim proved against a root
+// that was current a moment ago still verifies after another learner enrols.
+export ledger learners: HistoricMerkleTree<10, Bytes<32>>;
+
+export ledger enrolled: Counter;
+
+// challenge id -> commitment to its answer.
+export ledger challenges: Map<Bytes<32>, Bytes<32>>;
+
+// challenge id -> Night Credits minted to each solver.
+export ledger rewards: Map<Bytes<32>, Uint<64>>;
+
+// challenge id -> number of distinct learners who have solved it.
+export ledger solves: Map<Bytes<32>, Uint<32>>;
+
+// Spent (learner, challenge) nullifiers.
+export ledger claimed: Set<Bytes<32>>;
+
+export ledger totalClaims: Counter;
+
+// ---------------------------------------------------------------------------
+// Private witness data
+// ---------------------------------------------------------------------------
+
+witness instructorSecretKey(): Bytes<32>;
+
+// Held only by the learner. Its hash is what was enrolled.
+witness learnerSecret(): Bytes<32>;
+
+// The learner's path in the enrolment tree, looked up from public state.
+witness learnerPath(leaf: Bytes<32>): MerkleTreePath<10, Bytes<32>>;
+
+// The one-time code the learner was handed by their cohort organizer.
+witness inviteCode(): Bytes<32>;
+
+// SHA-256 of the learner's answer, computed in their browser.
+witness answerDigest(): Bytes<32>;
+
+// ---------------------------------------------------------------------------
+// Pure helpers — exported so clients derive the exact same values off-chain
+// ---------------------------------------------------------------------------
+
+export pure circuit instructorPublicKey(sk: Bytes<32>): Bytes<32> {
+  return persistentHash<Vector<2, Bytes<32>>>([pad(32, "nightschool:instructor:v1"), sk]);
+}
+
+export pure circuit inviteHash(code: Bytes<32>): Bytes<32> {
+  return persistentHash<Vector<2, Bytes<32>>>([pad(32, "nightschool:invite:v1"), code]);
+}
+
+export pure circuit learnerCommitment(secret: Bytes<32>): Bytes<32> {
+  return persistentHash<Vector<2, Bytes<32>>>([pad(32, "nightschool:learner:v1"), secret]);
+}
+
+// Binds the answer to its challenge, so one challenge's answer can never
+// satisfy another's commitment.
+export pure circuit answerCommitment(challengeId: Bytes<32>, digest: Bytes<32>): Bytes<32> {
+  return persistentHash<Vector<3, Bytes<32>>>(
+           [pad(32, "nightschool:answer:v1"), challengeId, digest]);
+}
+
+// Deterministic per (learner, challenge), and unlinkable to the learner's
+// enrolment commitment without their secret.
+export pure circuit claimNullifier(secret: Bytes<32>, challengeId: Bytes<32>): Bytes<32> {
+  return persistentHash<Vector<3, Bytes<32>>>(
+           [pad(32, "nightschool:claim:v1"), secret, challengeId]);
+}
+
+// ---------------------------------------------------------------------------
+// Circuits
+// ---------------------------------------------------------------------------
+
+constructor(instructorPk: Bytes<32>) {
+  instructor = disclose(instructorPk);
+}
+
+circuit assertInstructor(): [] {
+  assert(instructor == instructorPublicKey(instructorSecretKey()),
+         "nightschool: caller is not the instructor");
+}
+
+// Publish eight invite hashes at a time. Codes are handed out off-chain by
+// whoever runs the cohort; only their hashes are public.
+export circuit addInvites(batch: Vector<8, Bytes<32>>): [] {
+  assertInstructor();
+  for (const h of batch) {
+    invites.insert(disclose(h));
+  }
+}
+
+// Publish a challenge: an id, a commitment to its answer, and its reward.
+export circuit addChallenge(challengeId: Bytes<32>, commitment: Bytes<32>, reward: Uint<64>): [] {
+  assertInstructor();
+  const id = disclose(challengeId);
+  assert(!challenges.member(id), "nightschool: challenge already exists");
+  challenges.insert(id, disclose(commitment));
+  rewards.insert(id, disclose(reward));
+  solves.insert(id, 0);
+}
+
+// Redeem an invite and join the enrolled set. The learner's commitment is
+// public here, but no later claim can be traced back to it.
+export circuit enroll(learner: Bytes<32>): [] {
+  const h = disclose(inviteHash(inviteCode()));
+  assert(invites.member(h), "nightschool: invite is unknown or already used");
+  invites.remove(h);
+  learners.insert(disclose(learner));
+  enrolled.increment(1);
+}
+
+// Prove, in zero knowledge: "I am an enrolled learner, I know this challenge's
+// answer, and I have not claimed it before." Then receive its reward as a
+// shielded coin. Public: the challenge id and a nullifier. Private: who, and
+// what the answer was.
+export circuit claim(challengeId: Bytes<32>): [] {
+  const id = disclose(challengeId);
+  assert(challenges.member(id), "nightschool: unknown challenge");
+
+  const secret = learnerSecret();
+  const leaf = learnerCommitment(secret);
+  const path = learnerPath(leaf);
+  assert(path.leaf == leaf, "nightschool: membership path is for another learner");
+  assert(learners.checkRoot(disclose(merkleTreePathRoot<10, Bytes<32>>(path))),
+         "nightschool: not an enrolled learner");
+
+  assert(challenges.lookup(id) == answerCommitment(id, answerDigest()),
+         "nightschool: wrong answer");
+
+  const n = disclose(claimNullifier(secret, id));
+  assert(!claimed.member(n), "nightschool: already claimed by this learner");
+  claimed.insert(n);
+  solves.insert(id, (solves.lookup(id) + 1) as Uint<32>);
+  totalClaims.increment(1);
+
+  // The nullifier is unique per claim, so it doubles as the coin's nonce.
+  mintShieldedToken(pad(32, "nightschool:credit:v1"),
+                    rewards.lookup(id),
+                    n,
+                    left<ZswapCoinPublicKey, ContractAddress>(ownPublicKey()));
+}
